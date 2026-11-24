@@ -14,29 +14,34 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
+GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
 
-# Test uchun ruxsat berilgan Telegram ID lar (vergul bilan ajrating)
 ALLOWED_USERS = {
     # Masalan: 123456789, 987654321
 }
 
 app = Flask(__name__)
-bot = telebot.TeleBot(BOT_TOKEN)
-client = genai.Client(api_key=GEMINI_API_KEY)
+bot = telebot.TeleBot(BOT_TOKEN) if BOT_TOKEN else None
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+bot_started = False
+bot_lock = threading.Lock()
 
 @app.route("/")
 def home():
+    ensure_bot_running()
     return "Slayd Bot test rejimida ishlamoqda!"
 
 def is_allowed(user_id: int) -> bool:
-    # Agar ro'yxat bo'sh bo'lsa, vaqtincha hamma kirishi mumkin; ID lar qo'shilsa faqat o'shalar
     if not ALLOWED_USERS:
         return True
     return user_id in ALLOWED_USERS
 
 def generate_slide_data(topic: str, count: int):
+    if not client:
+        raise RuntimeError("GEMINI_API_KEY sozlanmagan.")
+
     prompt = f"""
     Mavzu: "{topic}".
     Shu mavzuda {count} ta slayddan iborat taqdimot tuzib ber.
@@ -85,7 +90,6 @@ def build_pptx(slides_data: list, output_file: str):
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
 
-    # Faqat juft/tanlangan slaydlarga (masalan 1-dan keyin har 2-slaydda) rasm tayyorlaymiz — tez va toza chiqadi
     tasks = []
     image_paths = {}
     stamp = int(time.time())
@@ -150,55 +154,60 @@ def build_pptx(slides_data: list, output_file: str):
             if os.path.exists(path):
                 os.remove(path)
 
-@bot.message_handler(commands=["start"])
-def cmd_start(message):
-    if not is_allowed(message.from_user.id):
-        bot.reply_to(message, "Bu bot hozircha faqat test guruhi uchun ishlaydi.")
-        return
+if bot:
+    @bot.message_handler(commands=["start"])
+    def cmd_start(message):
+        if not is_allowed(message.from_user.id):
+            bot.reply_to(message, "Bu bot hozircha faqat test guruhi uchun ishlaydi.")
+            return
 
-    bot.reply_to(
-        message,
-        f"Salom! Sizning ID: `{message.from_user.id}`\n\n"
-        "Mavzu va slaydlar sonini yozing:\n"
-        "*Menejment asoslari mavzusida 12 betlik slayd kerak*",
-        parse_mode="Markdown"
-    )
+        bot.reply_to(
+            message,
+            f"Salom! Sizning ID: `{message.from_user.id}`\n\n"
+            "Mavzu va slaydlar sonini yozing:\n"
+            "*Menejment asoslari mavzusida 12 betlik slayd kerak*",
+            parse_mode="Markdown"
+        )
 
-@bot.message_handler(func=lambda m: True)
-def handle_text(message):
-    if not is_allowed(message.from_user.id):
-        bot.reply_to(message, "Bu bot hozircha faqat test guruhi uchun ishlaydi.")
-        return
+    @bot.message_handler(func=lambda m: True)
+    def handle_text(message):
+        if not is_allowed(message.from_user.id):
+            bot.reply_to(message, "Bu bot hozircha faqat test guruhi uchun ishlaydi.")
+            return
 
-    text = message.text.strip()
-    nums = re.findall(r"\d+", text)
-    slide_count = max(3, min(int(nums[0]) if nums else 10, 25))
-    topic = re.sub(r"\d+\s*(betlik|ta|slayd|sahifa).*", "", text, flags=re.IGNORECASE).strip() or text
+        text = message.text.strip()
+        nums = re.findall(r"\d+", text)
+        slide_count = max(3, min(int(nums[0]) if nums else 10, 25))
+        topic = re.sub(r"\d+\s*(betlik|ta|slayd|sahifa).*", "", text, flags=re.IGNORECASE).strip() or text
 
-    wait_msg = bot.reply_to(
-        message,
-        f"⚙️ *{topic}* mavzusida {slide_count} betlik slayd tayyorlanmoqda...",
-        parse_mode="Markdown"
-    )
-    out_file = f"slayd_{message.chat.id}_{int(time.time())}.pptx"
+        wait_msg = bot.reply_to(
+            message,
+            f"⚙️ *{topic}* mavzusida {slide_count} betlik slayd tayyorlanmoqda...",
+            parse_mode="Markdown"
+        )
+        out_file = f"slayd_{message.chat.id}_{int(time.time())}.pptx"
 
-    try:
-        data = generate_slide_data(topic, slide_count)
-        build_pptx(data, out_file)
-        with open(out_file, "rb") as f:
-            bot.send_document(
-                message.chat.id,
-                f,
-                caption=f"✅ Tayyor!\n📌 Mavzu: {topic}\n📄 Slaydlar: {len(data)} bet"
-            )
-        bot.delete_message(message.chat.id, wait_msg.message_id)
-    except Exception as e:
-        bot.edit_message_text(f"❌ Xatolik yuz berdi: {e}", message.chat.id, wait_msg.message_id)
-    finally:
-        if os.path.exists(out_file):
-            os.remove(out_file)
+        try:
+            data = generate_slide_data(topic, slide_count)
+            build_pptx(data, out_file)
+            with open(out_file, "rb") as f:
+                bot.send_document(
+                    message.chat.id,
+                    f,
+                    caption=f"✅ Tayyor!\n📌 Mavzu: {topic}\n📄 Slaydlar: {len(data)} bet"
+                )
+            bot.delete_message(message.chat.id, wait_msg.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"❌ Xatolik yuz berdi: {e}", message.chat.id, wait_msg.message_id)
+        finally:
+            if os.path.exists(out_file):
+                os.remove(out_file)
 
 def run_bot():
+    if not bot:
+        print("XATO: BOT_TOKEN topilmadi!")
+        return
+    print("Telegram bot polling boshlandi...")
     while True:
         try:
             bot.infinity_polling(skip_pending=True, timeout=20)
@@ -206,7 +215,14 @@ def run_bot():
             print("Polling xatosi:", e)
             time.sleep(5)
 
-threading.Thread(target=run_bot, daemon=True).start()
+def ensure_bot_running():
+    global bot_started
+    with bot_lock:
+        if not bot_started:
+            bot_started = True
+            threading.Thread(target=run_bot, daemon=True).start()
+
+ensure_bot_running()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
