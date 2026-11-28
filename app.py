@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import json
 import time
@@ -9,7 +10,6 @@ from datetime import date
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from flask import Flask
 import telebot
 from google import genai
 from google.genai import types
@@ -30,28 +30,14 @@ ACCENT = RGBColor(37, 99, 235)
 TEXT = RGBColor(35, 38, 45)
 BG = RGBColor(246, 248, 252)
 
-app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True) if BOT_TOKEN else None
 client = (
     genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=90000))
     if GEMINI_API_KEY else None
 )
 
-bot_started = False
-bot_lock = threading.Lock()
 usage = defaultdict(lambda: {"day": None, "n": 0})
 usage_lock = threading.Lock()
-
-
-@app.route("/")
-def home():
-    ensure_bot_running()
-    return "eTaqdimot ishlayapti!"
-
-
-@app.route("/health")
-def health():
-    return "ok"
 
 
 # ---------------------------------------------------------------- limitlar
@@ -322,6 +308,7 @@ if bot:
 
 
 def run_bot():
+    sys.stdout.reconfigure(line_buffering=True)
     if not bot:
         print("XATO: BOT_TOKEN topilmadi!")
         return
@@ -338,15 +325,5 @@ def run_bot():
             time.sleep(5)
 
 
-def ensure_bot_running():
-    global bot_started
-    with bot_lock:
-        if not bot_started:
-            bot_started = True
-            threading.Thread(target=run_bot, daemon=True).start()
-
-
-ensure_bot_running()
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    run_bot()
