@@ -1,5 +1,3 @@
-flask
-gunicorn
 pyTelegramBotAPI
 google-genai
 python-pptx
